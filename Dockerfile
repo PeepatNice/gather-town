@@ -2,7 +2,7 @@
 FROM node:20-alpine AS client-build
 WORKDIR /app/apps/client
 COPY apps/client/package.json apps/client/package-lock.json ./
-RUN npm ci
+RUN npm ci --include=dev
 COPY apps/client/ ./
 RUN npm run build
 
@@ -10,7 +10,7 @@ RUN npm run build
 FROM node:20-alpine AS server-build
 WORKDIR /app/apps/server
 COPY apps/server/package.json apps/server/package-lock.json ./
-RUN npm ci
+RUN npm ci --include=dev
 COPY apps/server/ ./
 RUN npm run build
 
