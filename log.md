@@ -63,3 +63,20 @@
 - **Dockerfile**: Multi-stage build (client-build → server-build → production) using `node:20-alpine`, single container serves everything on port 3001
 - **docker-compose.yml**: Single service, maps port 3001
 - **.dockerignore**: Excludes node_modules, dist, .git, .obsidian, markdown docs, Research, Resources
+
+## Session — 2026-02-18 (Docker Fix)
+
+### 1. Fix: Docker CLI not in PATH (Bug Fix)
+- Docker Desktop was installed at `/Users/administrator/Desktop/program/Docker.app` but the symlink at `/usr/local/bin/docker` pointed to the old location (`/Users/administrator/Desktop/Docker.app`)
+- Resolved by prepending the correct path to `$PATH` for Docker commands
+
+### 2. Fix: Dockerfile npm ci auth failure with private Nexus registry (Bug Fix)
+- `npm ci` inside Docker failed with `E401 Unable to authenticate, need: BASIC realm="Sonatype Nexus Repository Manager"`
+- Root cause: The host machine uses a global `~/.npmrc` with a private Nexus registry + auth token, which Docker builds don't have access to
+- Created project-level `.npmrc` with registry config
+- Updated `Dockerfile`: added `COPY .npmrc /root/.npmrc` before `npm ci` and `RUN rm -f /root/.npmrc` after install in all 3 stages (client-build, server-build, production) so the token doesn't persist in the final image
+- Added `.npmrc` to `.gitignore` to keep auth token out of the repository
+
+### 3. Commit & push to GitHub (Setup)
+- Committed Dockerfile and .gitignore changes as `9d056bb`
+- Pushed to `main` on https://github.com/NaphatPound/gather-town
