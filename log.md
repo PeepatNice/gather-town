@@ -80,3 +80,47 @@
 ### 3. Commit & push to GitHub (Setup)
 - Committed Dockerfile and .gitignore changes as `9d056bb`
 - Pushed to `main` on https://github.com/NaphatPound/gather-town
+
+## Session — 2026-02-18 (Ball Feature)
+
+### 1. Kickable Ball (Feature)
+- New file: `BallEntity.ts` — pixel-art red ball (16x16) with physics: velocity, friction (0.97/frame), wall bounce (25% energy loss), kick detection (< 20px proximity → 220 px/s kick)
+- Wired into `MainScene.ts`: spawns at tile (5,5), updated each frame with player position, destroyed on shutdown
+- No button required — walking into the ball kicks it in the opposite direction
+
+## Session — 2026-02-18 (Football Field)
+
+### 1. Football Field with Goals & Scoreboard (Feature)
+- **Map expansion**: `MAP_WIDTH` from 20 → 40; town (x=0-19) unchanged, football field (x=20-39) added to the right
+- **Town opening**: Right wall at x=19 opened at y=6-8 to connect town and field
+- **Field tiles**: Added `tile-fieldgrass` (darker green), `tile-goal-left` (net + blue tint), `tile-goal-right` (net + red tint) procedural textures
+- **New tile types**: 4 = goal_left (x=20, y=5-9), 5 = goal_right (x=39, y=5-9) — walkable, trigger scoring
+- **Goal posts**: Walls at (20,4), (20,10), (39,4), (39,10)
+- **Field lines**: Center line, center circle, penalty areas, goal area boxes drawn via Phaser Graphics at depth 1
+- **Ball relocated**: Spawn moved from (5,5) → (30,7) center of field
+- **Goal detection** (`BallEntity.ts`): Ball entering tile type 4 → right team scores; type 5 → left team scores; ball resets to center (30,7); 1-second cooldown prevents double-counting
+- **EventBus**: Added `GOAL_SCORED` event
+- **ScoreBoard** (`components/ScoreBoard.tsx`): React overlay showing `LEFT 0 - 0 RIGHT` with pixel-art font; listens to `GOAL_SCORED` via EventBus; glow flash animation on scoring side
+- **GameView**: Added `<ScoreBoard />` to game wrapper
+
+### 2. Spacebar Charge Kick (Feature)
+- **MainScene.ts**: Added spacebar input, facing direction tracking, charge state (0→1), charge bar UI (yellow→red gradient under player)
+- **BallEntity.ts**: Added `chargedKick(dirX, dirY, charge, playerX, playerY)` method — kicks ball in player's facing direction with variable power
+- Charge rate: **1.2/s when standing still** (fast), **0.35/s when moving** (slow) — rewards positioning
+- Kick power scales from 250 px/s (tap) to 550 px/s (full charge)
+- Charged kick range: 40px (double the walk-kick range of 20px)
+- Walk-into-ball kick (220 px/s) still works as a light tap
+
+### 3. Shift to Sprint (Feature)
+- Hold Shift to run at 280 px/s (normal: 160 px/s)
+
+### 4. Spawn Point Moved (Enhancement)
+- Player spawn moved from (10,7) → (17,7) — right in front of the field entrance
+
+## Session — 2026-02-18 (Sprite Sheet Animation)
+
+### 1. Sprite Sheet Animation — Walk, Run, Kick (Feature)
+- **New file: `drawAvatar.ts`** — Extracted `drawPixelBody`, `drawPixelOutfit`, `drawPixelHair`, `drawPixelAccessory`, `shadeColor` from `AvatarRenderer.tsx` into shared module; added `LimbOffsets` interface to `drawPixelBody` and `drawPixelOutfit` for arm/leg position offsets
+- **Modified: `AvatarRenderer.tsx`** — Now imports draw functions from `../drawAvatar` instead of defining them locally; no behavior change in character creator preview
+- **New file: `SpriteSheetGenerator.ts`** — Generates 384×32 canvas (12 frames × 32px) at runtime using avatar store state and draw functions with per-frame limb offsets; defines frame configs for idle(1), walk(4), run(4), kick(3)
+- **Modified: `MainScene.ts`** — Replaced static avatar image loading with async `loadSpriteSheet()` that registers a Phaser spritesheet + 4 animations (`player-idle`, `player-walk`, `player-run`, `player-kick`); added `playerState` field for state machine; animation transitions in `update()` based on movement/shift/kick; kick is one-shot (returns to idle on `animationcomplete`); sprite flips horizontally via `setFlipX` based on movement direction

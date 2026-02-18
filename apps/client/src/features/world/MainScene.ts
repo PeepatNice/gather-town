@@ -1,12 +1,15 @@
 import Phaser from "phaser";
 import ObjectManager from "./objects/ObjectManager";
 import RemotePlayerManager from "./RemotePlayerManager";
+import BallEntity from "./BallEntity";
 import { networkService, type PlayerData } from "../../core/network/NetworkService";
+import { generateSpriteSheet, ANIM_CONFIG } from "./SpriteSheetGenerator";
 
 const TILE_SIZE = 32;
-const MAP_WIDTH = 20;
+const MAP_WIDTH = 40;
 const MAP_HEIGHT = 15;
 const PLAYER_SPEED = 160;
+const SPRINT_SPEED = 280;
 
 export default class MainScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Sprite;
@@ -17,6 +20,15 @@ export default class MainScene extends Phaser.Scene {
   private groundLayer!: Phaser.Tilemaps.TilemapLayer;
   private objectManager!: ObjectManager;
   private remotePlayerManager!: RemotePlayerManager;
+  private ball!: BallEntity;
+  private spaceKey!: Phaser.Input.Keyboard.Key;
+  private shiftKey!: Phaser.Input.Keyboard.Key;
+  private facingX = 0;
+  private facingY = 1; // default facing down
+  private charge = 0;
+  private isCharging = false;
+  private chargeBar!: Phaser.GameObjects.Graphics;
+  private playerState: "idle" | "walk" | "run" | "kick" = "idle";
 
   // Bound handlers for cleanup
   private onPlayersExisting = (players: PlayerData[]) => {
@@ -102,6 +114,55 @@ export default class MainScene extends Phaser.Scene {
     fCtx.strokeStyle = "#7a6245";
     fCtx.strokeRect(0, 0, TILE_SIZE, TILE_SIZE);
     this.textures.addCanvas("tile-floor", floorCanvas);
+
+    // Create field grass tile (darker green for football field)
+    const fieldCanvas = document.createElement("canvas");
+    fieldCanvas.width = TILE_SIZE;
+    fieldCanvas.height = TILE_SIZE;
+    const fiCtx = fieldCanvas.getContext("2d")!;
+    fiCtx.fillStyle = "#2d6e3f";
+    fiCtx.fillRect(0, 0, TILE_SIZE, TILE_SIZE);
+    fiCtx.fillStyle = "#358249";
+    for (let i = 0; i < 6; i++) {
+      const x = Math.floor(Math.random() * 30);
+      const y = Math.floor(Math.random() * 30);
+      fiCtx.fillRect(x, y, 2, 2);
+    }
+    this.textures.addCanvas("tile-fieldgrass", fieldCanvas);
+
+    // Create goal-left tile (net pattern, blue tint)
+    const goalLCanvas = document.createElement("canvas");
+    goalLCanvas.width = TILE_SIZE;
+    goalLCanvas.height = TILE_SIZE;
+    const glCtx = goalLCanvas.getContext("2d")!;
+    glCtx.fillStyle = "#2d6e3f";
+    glCtx.fillRect(0, 0, TILE_SIZE, TILE_SIZE);
+    glCtx.strokeStyle = "#ffffffaa";
+    glCtx.lineWidth = 1;
+    for (let i = 0; i < TILE_SIZE; i += 6) {
+      glCtx.beginPath(); glCtx.moveTo(i, 0); glCtx.lineTo(i, TILE_SIZE); glCtx.stroke();
+      glCtx.beginPath(); glCtx.moveTo(0, i); glCtx.lineTo(TILE_SIZE, i); glCtx.stroke();
+    }
+    glCtx.fillStyle = "#4488ff33";
+    glCtx.fillRect(0, 0, TILE_SIZE, TILE_SIZE);
+    this.textures.addCanvas("tile-goal-left", goalLCanvas);
+
+    // Create goal-right tile (net pattern, red tint)
+    const goalRCanvas = document.createElement("canvas");
+    goalRCanvas.width = TILE_SIZE;
+    goalRCanvas.height = TILE_SIZE;
+    const grCtx = goalRCanvas.getContext("2d")!;
+    grCtx.fillStyle = "#2d6e3f";
+    grCtx.fillRect(0, 0, TILE_SIZE, TILE_SIZE);
+    grCtx.strokeStyle = "#ffffffaa";
+    grCtx.lineWidth = 1;
+    for (let i = 0; i < TILE_SIZE; i += 6) {
+      grCtx.beginPath(); grCtx.moveTo(i, 0); grCtx.lineTo(i, TILE_SIZE); grCtx.stroke();
+      grCtx.beginPath(); grCtx.moveTo(0, i); grCtx.lineTo(TILE_SIZE, i); grCtx.stroke();
+    }
+    grCtx.fillStyle = "#ff444433";
+    grCtx.fillRect(0, 0, TILE_SIZE, TILE_SIZE);
+    this.textures.addCanvas("tile-goal-right", goalRCanvas);
   }
 
   create() {
@@ -109,7 +170,7 @@ export default class MainScene extends Phaser.Scene {
     this.buildMap();
 
     // Create player sprite
-    const startX = 10 * TILE_SIZE + TILE_SIZE / 2;
+    const startX = 17 * TILE_SIZE + TILE_SIZE / 2;
     const startY = 7 * TILE_SIZE + TILE_SIZE / 2;
 
     // Create fallback texture first
@@ -120,27 +181,10 @@ export default class MainScene extends Phaser.Scene {
     graphics.destroy();
 
     this.player = this.add.sprite(startX, startY, "player-fallback");
-
-    // Load avatar from data URL and swap texture when ready
-    if (this.avatarDataURL) {
-      const img = new Image();
-      img.onload = () => {
-        const avatarCanvas = document.createElement("canvas");
-        avatarCanvas.width = img.width;
-        avatarCanvas.height = img.height;
-        const ctx = avatarCanvas.getContext("2d")!;
-        ctx.drawImage(img, 0, 0);
-        if (this.textures.exists("player-avatar")) {
-          this.textures.remove("player-avatar");
-        }
-        this.textures.addCanvas("player-avatar", avatarCanvas);
-        this.player.setTexture("player-avatar");
-        this.player.setScale(TILE_SIZE / img.width);
-      };
-      img.src = this.avatarDataURL;
-    }
-
     this.player.setDepth(10);
+
+    // Generate sprite sheet from avatar and set up animations
+    this.loadSpriteSheet();
 
     // Set up camera (zoom 2x for better visibility of pixel art)
     this.cameras.main.setZoom(2);
@@ -162,6 +206,15 @@ export default class MainScene extends Phaser.Scene {
       S: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.S),
       D: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D),
     };
+
+    // Spacebar for charged kick
+    this.spaceKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+    // Shift for sprint
+    this.shiftKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
+
+    // Charge bar graphic (hidden initially)
+    this.chargeBar = this.add.graphics();
+    this.chargeBar.setDepth(12);
 
     // Add player name label
     const nameText = this.add.text(startX, startY - 20, this.playerName, {
@@ -190,6 +243,9 @@ export default class MainScene extends Phaser.Scene {
       }
     });
 
+    // Kickable ball
+    this.ball = new BallEntity(this, 30, 7);
+
     // --- Multiplayer ---
     this.remotePlayerManager = new RemotePlayerManager(this);
 
@@ -207,58 +263,204 @@ export default class MainScene extends Phaser.Scene {
       networkService.off("player:moved", this.onPlayerMoved);
       networkService.off("player:left", this.onPlayerLeft);
       this.remotePlayerManager.destroyAll();
+      this.ball.destroy();
     });
   }
 
   private buildMap() {
-    // Simple map layout: 0=grass, 1=path, 2=wall, 3=floor
+    // Map layout: 0=grass, 1=path, 2=wall, 3=floor, 4=goal_left, 5=goal_right
+    const TOWN_W = 20;
     const mapData: number[][] = [];
     for (let y = 0; y < MAP_HEIGHT; y++) {
       const row: number[] = [];
       for (let x = 0; x < MAP_WIDTH; x++) {
-        // Walls around the edge
-        if (x === 0 || x === MAP_WIDTH - 1 || y === 0 || y === MAP_HEIGHT - 1) {
-          row.push(2);
-        }
-        // Building in top-right (door at x=16, y=5)
-        else if (x >= 14 && x <= 18 && y >= 2 && y <= 5) {
-          if (
-            (x === 14 || x === 18 || y === 2 || y === 5) &&
-            !(x === 16 && y === 5) // door gap
+        // ── TOWN area (x=0-19) ──
+        if (x < TOWN_W) {
+          // Town walls — right wall (x=19) open at y=6-8
+          if (x === 0 || y === 0 || y === MAP_HEIGHT - 1) {
+            row.push(2);
+          } else if (x === TOWN_W - 1) {
+            if (y >= 6 && y <= 8) {
+              row.push(1); // opening to field
+            } else {
+              row.push(2);
+            }
+          }
+          // Building in top-right (door at x=16, y=5)
+          else if (x >= 14 && x <= 18 && y >= 2 && y <= 5) {
+            if (
+              (x === 14 || x === 18 || y === 2 || y === 5) &&
+              !(x === 16 && y === 5)
+            ) {
+              row.push(2);
+            } else {
+              row.push(3);
+            }
+          }
+          // Paths
+          else if (
+            y === 7 ||
+            (x === 10 && y >= 3 && y <= 12) ||
+            (x === 16 && y === 6)
           ) {
-            row.push(2); // walls
+            row.push(1);
           } else {
-            row.push(3); // floor
+            row.push(0);
           }
         }
-        // Path through middle + branch to building door
-        else if (
-          y === 7 ||
-          (x === 10 && y >= 3 && y <= 12) ||
-          (x === 16 && y === 6)
-        ) {
-          row.push(1);
-        }
-        // Grass everywhere else
+        // ── FIELD area (x=20-39) ──
         else {
-          row.push(0);
+          // Top and bottom walls
+          if (y === 0 || y === MAP_HEIGHT - 1) {
+            row.push(2);
+          }
+          // Left goal zone (x=20)
+          else if (x === 20) {
+            if (y >= 5 && y <= 9) {
+              row.push(4); // goal_left
+            } else if (y === 4 || y === 10) {
+              row.push(2); // goal post
+            } else {
+              row.push(2); // side wall
+            }
+          }
+          // Right goal zone (x=39)
+          else if (x === 39) {
+            if (y >= 5 && y <= 9) {
+              row.push(5); // goal_right
+            } else if (y === 4 || y === 10) {
+              row.push(2); // goal post
+            } else {
+              row.push(2); // side wall
+            }
+          }
+          // Field interior
+          else {
+            row.push(0); // field grass (rendered differently below)
+          }
         }
       }
       mapData.push(row);
     }
 
-    const tileTextures = ["tile-grass", "tile-path", "tile-wall", "tile-floor"];
+    const tileTextures: Record<number, string> = {
+      0: "tile-grass",
+      1: "tile-path",
+      2: "tile-wall",
+      3: "tile-floor",
+      4: "tile-goal-left",
+      5: "tile-goal-right",
+    };
+
     for (let y = 0; y < MAP_HEIGHT; y++) {
       for (let x = 0; x < MAP_WIDTH; x++) {
-        const tileKey = tileTextures[mapData[y][x]];
+        // Use field grass texture for interior field tiles
+        let tileKey = tileTextures[mapData[y][x]];
+        if (mapData[y][x] === 0 && x >= TOWN_W) {
+          tileKey = "tile-fieldgrass";
+        }
         this.add
           .image(x * TILE_SIZE + TILE_SIZE / 2, y * TILE_SIZE + TILE_SIZE / 2, tileKey)
           .setDepth(0);
       }
     }
 
+    // ── Draw field line markings ──
+    this.drawFieldLines(TOWN_W);
+
     // Store collision data
     this.data.set("mapData", mapData);
+  }
+
+  private drawFieldLines(fieldStartX: number) {
+    const gfx = this.add.graphics();
+    gfx.setDepth(1);
+    gfx.lineStyle(2, 0xffffff, 0.7);
+
+    const fLeft = fieldStartX * TILE_SIZE;
+    const fRight = MAP_WIDTH * TILE_SIZE;
+    const fTop = 1 * TILE_SIZE;       // y=1 (below top wall)
+    const fBottom = (MAP_HEIGHT - 1) * TILE_SIZE; // y=14 (above bottom wall)
+    const fieldW = fRight - fLeft;
+    const fieldH = fBottom - fTop;
+    const midX = fLeft + fieldW / 2;
+    const midY = fTop + fieldH / 2;
+
+    // Outer boundary
+    gfx.strokeRect(fLeft + TILE_SIZE, fTop, fieldW - 2 * TILE_SIZE, fieldH);
+
+    // Center line
+    gfx.beginPath();
+    gfx.moveTo(midX, fTop);
+    gfx.lineTo(midX, fBottom);
+    gfx.strokePath();
+
+    // Center circle
+    gfx.strokeCircle(midX, midY, TILE_SIZE * 2.5);
+
+    // Center dot
+    gfx.fillStyle(0xffffff, 0.7);
+    gfx.fillCircle(midX, midY, 3);
+
+    // Left penalty area
+    gfx.strokeRect(fLeft + TILE_SIZE, midY - 3 * TILE_SIZE, 3 * TILE_SIZE, 6 * TILE_SIZE);
+
+    // Right penalty area
+    gfx.strokeRect(fRight - 4 * TILE_SIZE, midY - 3 * TILE_SIZE, 3 * TILE_SIZE, 6 * TILE_SIZE);
+
+    // Goal area boxes (smaller, inside penalty)
+    gfx.strokeRect(fLeft + TILE_SIZE, midY - 1.5 * TILE_SIZE, 1.5 * TILE_SIZE, 3 * TILE_SIZE);
+    gfx.strokeRect(fRight - 2.5 * TILE_SIZE, midY - 1.5 * TILE_SIZE, 1.5 * TILE_SIZE, 3 * TILE_SIZE);
+  }
+
+  private async loadSpriteSheet() {
+    try {
+      const sheetCanvas = await generateSpriteSheet();
+
+      // Convert canvas to HTMLImageElement (Phaser requires it for addSpriteSheet)
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = reject;
+        image.src = sheetCanvas.toDataURL();
+      });
+
+      if (this.textures.exists("player-sheet")) {
+        this.textures.remove("player-sheet");
+      }
+      this.textures.addSpriteSheet("player-sheet", img, {
+        frameWidth: 32,
+        frameHeight: 32,
+      });
+
+      // Create animations
+      const animKeys = ["player-idle", "player-walk", "player-run", "player-kick"] as const;
+      const configs = [ANIM_CONFIG.idle, ANIM_CONFIG.walk, ANIM_CONFIG.run, ANIM_CONFIG.kick];
+      for (let i = 0; i < animKeys.length; i++) {
+        if (this.anims.exists(animKeys[i])) this.anims.remove(animKeys[i]);
+        this.anims.create({
+          key: animKeys[i],
+          frames: this.anims.generateFrameNumbers("player-sheet", {
+            start: configs[i].start,
+            end: configs[i].end,
+          }),
+          frameRate: configs[i].frameRate,
+          repeat: configs[i].repeat,
+        });
+      }
+
+      this.player.setTexture("player-sheet");
+      this.player.setScale(TILE_SIZE / 32);
+      this.player.play("player-idle");
+
+      // When kick finishes, return to idle or walk
+      this.player.on("animationcomplete-player-kick", () => {
+        this.playerState = "idle";
+      });
+    } catch (e) {
+      // Fallback: keep the blue square if sprite sheet generation fails
+      console.warn("Sprite sheet generation failed, using fallback", e);
+    }
   }
 
   update() {
@@ -266,12 +468,22 @@ export default class MainScene extends Phaser.Scene {
 
     let vx = 0;
     let vy = 0;
+    const speed = this.shiftKey.isDown ? SPRINT_SPEED : PLAYER_SPEED;
 
-    if (this.cursors.left.isDown || this.wasd.A.isDown) vx = -PLAYER_SPEED;
-    else if (this.cursors.right.isDown || this.wasd.D.isDown) vx = PLAYER_SPEED;
+    if (this.cursors.left.isDown || this.wasd.A.isDown) vx = -speed;
+    else if (this.cursors.right.isDown || this.wasd.D.isDown) vx = speed;
 
-    if (this.cursors.up.isDown || this.wasd.W.isDown) vy = -PLAYER_SPEED;
-    else if (this.cursors.down.isDown || this.wasd.S.isDown) vy = PLAYER_SPEED;
+    if (this.cursors.up.isDown || this.wasd.W.isDown) vy = -speed;
+    else if (this.cursors.down.isDown || this.wasd.S.isDown) vy = speed;
+
+    // Track facing direction (only update when moving)
+    if (vx !== 0 || vy !== 0) {
+      const len = Math.sqrt(vx * vx + vy * vy);
+      this.facingX = vx / len;
+      this.facingY = vy / len;
+    }
+
+    const isMoving = vx !== 0 || vy !== 0;
 
     // Normalize diagonal movement
     if (vx !== 0 && vy !== 0) {
@@ -280,6 +492,66 @@ export default class MainScene extends Phaser.Scene {
     }
 
     const dt = this.game.loop.delta / 1000;
+
+    // ── Charge kick logic ──
+    if (this.spaceKey.isDown) {
+      if (!this.isCharging) {
+        this.isCharging = true;
+        this.charge = 0;
+      }
+      // Charge rate: fast when still (1.2/s), slow when moving (0.35/s)
+      const chargeRate = isMoving ? 0.35 : 1.2;
+      this.charge = Math.min(1, this.charge + chargeRate * dt);
+    } else if (this.isCharging) {
+      // Spacebar released → perform charged kick
+      this.isCharging = false;
+      if (this.ball) {
+        this.ball.chargedKick(this.facingX, this.facingY, this.charge, this.player.x, this.player.y);
+      }
+      this.charge = 0;
+      // Play kick animation (one-shot)
+      if (this.playerState !== "kick") {
+        this.playerState = "kick";
+        this.player.play("player-kick");
+      }
+    }
+
+    // Draw charge bar
+    this.chargeBar.clear();
+    if (this.isCharging && this.charge > 0) {
+      const barW = 24;
+      const barH = 4;
+      const bx = this.player.x - barW / 2;
+      const by = this.player.y + 18;
+
+      // Background
+      this.chargeBar.fillStyle(0x000000, 0.6);
+      this.chargeBar.fillRect(bx - 1, by - 1, barW + 2, barH + 2);
+
+      // Fill — yellow → orange → red
+      const r = Math.min(255, Math.floor(255));
+      const g = Math.max(0, Math.floor(255 * (1 - this.charge)));
+      const color = (r << 16) | (g << 8) | 0;
+      this.chargeBar.fillStyle(color, 1);
+      this.chargeBar.fillRect(bx, by, barW * this.charge, barH);
+    }
+
+    // ── Animation state ──
+    if (this.playerState !== "kick") {
+      let newState: "idle" | "walk" | "run" = "idle";
+      if (isMoving) {
+        newState = this.shiftKey.isDown ? "run" : "walk";
+      }
+      if (newState !== this.playerState) {
+        this.playerState = newState;
+        this.player.play("player-" + newState);
+      }
+    }
+
+    // Flip sprite based on horizontal facing
+    if (vx < 0) this.player.setFlipX(true);
+    else if (vx > 0) this.player.setFlipX(false);
+
     const newX = this.player.x + vx * dt;
     const newY = this.player.y + vy * dt;
 
@@ -302,6 +574,11 @@ export default class MainScene extends Phaser.Scene {
     // Update object proximity detection
     if (this.objectManager) {
       this.objectManager.update(this.player.x, this.player.y);
+    }
+
+    // Update ball physics
+    if (this.ball) {
+      this.ball.update(dt, this.player.x, this.player.y);
     }
 
     // Send position to server + interpolate remote players

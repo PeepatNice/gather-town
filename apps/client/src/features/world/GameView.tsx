@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from "react";
 import Phaser from "phaser";
 import MainScene from "./MainScene";
 import InteractionOverlay from "./components/InteractionOverlay";
+import ScoreBoard from "./components/ScoreBoard";
 import { networkService } from "../../core/network/NetworkService";
 
 interface GameViewProps {
@@ -81,6 +82,7 @@ export default function GameView({ avatarDataURL, playerName, onBack }: GameView
           className="border-2 border-gray-700 rounded-lg overflow-hidden"
         />
         <InteractionOverlay />
+        <ScoreBoard />
       </div>
     </div>
   );
